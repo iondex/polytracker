@@ -16,9 +16,18 @@ matrix:
 before_install:
 - |
   set -exo pipefail
+
   # Use Python 3.7 and make sure it has the `venv` module
   pyenv global system 3.7.1  # https://github.com/travis-ci/travis-ci/issues/8363
   python3.7 -mvenv -h
+
+  # install clang-7 and llvm-7 from the LLVM repos, as the official Ubuntu
+  # packages have trouble with polytracker (?)
+  wget -O /tmp/llvm-snapshot.gpg.key https://apt.llvm.org/llvm-snapshot.gpg.key
+  apt-key add /tmp/llvm-snapshot.gpg.key
+  echo "deb http://apt.llvm.org/bionic/ llvm-toolchain-bionic-7 main" >>/etc/apt/sources.list
+  apt-get -y update
+  apt-get install -y clang-7 llvm-7 lld-7
 
 install:
 - make CC="$CC" CXX="$CXX" install
