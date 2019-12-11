@@ -5,6 +5,7 @@ if sys.version_info < (3, 7):
     sys.exit('This script must be run with at least Python 3.7')
 
 import contextlib
+import multiprocessing
 import os
 # import pytest
 import subprocess
@@ -58,6 +59,8 @@ def chdir(d) -> Generator[str, None, None]:
 PC: str   = _find_program('polyclang')
 PCPP: str = _find_program('polyclang++')
 TESTS_DIR = realpath(dirname(__file__))
+CPU_COUNT = multiprocessing.cpu_count()
+assert isinstance(CPU_COUNT, int) and CPU_COUNT > 0
 
 EXPECTED_STDERR_NO_POLYPATH = b"Unable to get required POLYPATH environment variable -- perhaps it's not set?\n"
 
@@ -107,4 +110,4 @@ def test_build_mupdf(tmpdir) -> None:
     pc_env['CXX'] = PCPP
     with chdir(tmpdir) as prev_dir:
         check_call(['tar', '-xzf', join(prev_dir, mupdf_tarball)])
-        check_call(['make', '-C', mupdf_dirname, 'HAVE_GLUT=no', 'HAVE_X11=no', 'build=debug', '-j4'], env=pc_env)
+        check_call(['make', '-C', mupdf_dirname, 'HAVE_GLUT=no', 'HAVE_X11=no', 'build=debug', f'-j{CPU_COUNT}'], env=pc_env)
