@@ -1,7 +1,7 @@
 language: cpp
 cache:
   directories:
-  - trailofbits/TheAlanParsersProject/polytracker/test/downloads
+  - trailofbits/polytracker/polytracker/test/downloads
 
 matrix:
   include:
