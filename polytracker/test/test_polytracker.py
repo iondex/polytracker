@@ -110,4 +110,4 @@ def test_build_mupdf(tmpdir) -> None:
     pc_env['CXX'] = PCPP
     with chdir(tmpdir) as prev_dir:
         check_call(['tar', '-xzf', join(prev_dir, mupdf_tarball)])
-        check_call(['make', '-C', mupdf_dirname, 'HAVE_GLUT=no', 'HAVE_X11=no', 'build=debug', f'-j{CPU_COUNT}'], env=pc_env)
+        check_call(['make', '-C', mupdf_dirname, 'HAVE_GLUT=no', 'HAVE_X11=no', 'HAVE_LIBCRYPTO=no', f'prefix={os.getcwd()}/install', 'build=debug', f'-j{CPU_COUNT}', 'install'], env=pc_env)
