@@ -27,6 +27,10 @@ else:
 # Utilities
 ################################################################################
 def _find_program(name: str) -> str:
+    """
+    Given a program name, returns the absolute path of that program as found
+    from the PATH.  Raises `ValueError` is the program isn't found.
+    """
     res = which(name)
     if res is None:
         raise ValueError(f"unable to find `{name}` -- perhaps it's not in your PATH?")
