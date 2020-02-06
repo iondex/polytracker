@@ -128,6 +128,12 @@ void __dfsan_reset_frame(int* index) {
 }
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE
+void __dfsan_block_entry(char * block_name) {
+	std::string test = block_name;
+	std::cout << "HIT BLOCK NAME" << test << std::endl;
+}
+
+extern "C" SANITIZER_INTERFACE_ATTRIBUTE
 int __dfsan_func_entry(char * fname) {
 	init_lock.lock(); 
 	if (is_init == false) {
