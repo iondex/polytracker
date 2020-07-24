@@ -107,8 +107,8 @@ std::mutex init_lock;
 int __dfsan::vmaSize;
 #endif
 
-uint32_t cmp_cache_0;
-uint32_t cmp_cache_1;
+uint32_t arg_val_cache_0;
+uint32_t arg_val_cache_1;
 dfsan_label label_cache_0;
 dfsan_label label_cache_1;
 
@@ -143,19 +143,16 @@ extern "C" SANITIZER_INTERFACE_ATTRIBUTE void __dfsan_log_taint_cmp(
 //TODO add combined label
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE void __dfsan_test_fn(
 		uint32_t op_code, uint64_t * addr_1, uint64_t * addr_2, dfsan_label labela, dfsan_label labelb) {
+	//Debug logging
 	std::string res = "";
-	switch (op_code) {
-	case 1:
-		res += "cmp "
-	}
 	uint32_t * test_cast = (uint32_t *)addr_1;
 	uint32_t * test_cast_two = (uint32_t *)addr_2;
 	char one_char = (char) *test_cast;
 	char two_char = (char) *test_cast_two;
 	std::cout << "char 1?: " << one_char << std::endl;
 	std::cout << "char 2?: " << two_char << std::endl;
-	std::cout << "char 1(from cache): " << (char)cmp_cache_0 << std::endl;
-	std::cout << "char 2(from cache): " << (char)cmp_cache_1 << std::endl;
+	std::cout << "char 1(from cache): " << (char)arg_val_cache_0 << std::endl;
+	std::cout << "char 2(from cache): " << (char)arg_val_cache_1 << std::endl;
 	dfsan_label test_label_one = dfsan_read_label(test_cast, sizeof(*test_cast));
 	dfsan_label test_label_two = dfsan_read_label(test_cast_two, sizeof(*test_cast_two));
 	std::cout << "LABEL ONE: " << test_label_one << std::endl;
