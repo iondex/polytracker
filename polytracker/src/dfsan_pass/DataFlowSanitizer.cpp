@@ -47,6 +47,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+//Instruction visitors TODO
+//TODO Switch statement
+//All the BinaryOps
+//All the BitwiseBinaryOps
+//icmp, fcmp, select
+//
+
+#include <llvm/Config/llvm-config.h>
+#include <llvm/IR/IRBuilder.h>
+
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/DepthFirstIterator.h"
@@ -345,6 +355,13 @@ class DataFlowSanitizer : public ModulePass {
   FunctionType *DFSanNonzeroLabelFnTy;
   FunctionType *DFSanVarargWrapperFnTy;
 
+  //Cache global vars
+  GlobalVariable *arg_val_cache_0;
+  GlobalVariable *arg_val_cache_1;
+
+  GlobalVariable *label_cache_0;
+  GlobalVariable *label_cache_1;
+
   // General for all taint
   FunctionType *DFSanLogTaintFnTy;
   Constant *DFSanLogTaintFn;
@@ -352,6 +369,9 @@ class DataFlowSanitizer : public ModulePass {
   // Function to log cmps
   FunctionType *DFSanLogCmpFnTy;
   Constant *DFSanLogCmpFn;
+
+  FunctionType *DFSanLogInstFnTy;
+  Constant *DFSanLogInstFn;
 
   FunctionType *DFSanEntryFnTy;
   FunctionType *DFSanExitFnTy;
@@ -571,6 +591,7 @@ bool DataFlowSanitizer::doInitialization(Module &M) {
   ShadowTy = IntegerType::get(*Ctx, ShadowWidth);
   ShadowPtrTy = PointerType::getUnqual(ShadowTy);
   IntptrTy = DL.getIntPtrType(*Ctx);
+  //auto CharTy = Type::getInt8Ty(*Ctx);
   ZeroShadow = ConstantInt::getSigned(ShadowTy, 0);
   ShadowPtrMul = ConstantInt::getSigned(IntptrTy, ShadowWidth / 8);
   if (IsX86_64)
@@ -599,6 +620,17 @@ bool DataFlowSanitizer::doInitialization(Module &M) {
   Type *DFSanLogCmpArgs[1] = {ShadowTy};
   DFSanLogCmpFnTy =
       FunctionType::get(Type::getVoidTy(*Ctx), DFSanLogCmpArgs, false);
+
+  //DFSanLogInstFn takes op_code, addr1, addr2, addr3, addr4
+  Type * DFSanLogInstFnArgs[5] = {
+		  IntegerType::getInt32Ty(*Ctx),
+		  IntegerType::getInt32PtrTy(*Ctx),
+		  IntegerType::getInt32PtrTy(*Ctx),
+		  IntegerType::getInt32PtrTy(*Ctx),
+		  IntegerType::getInt32PtrTy(*Ctx)
+  };
+  DFSanLogInstFnTy =
+	      FunctionType::get(Type::getVoidTy(*Ctx), DFSanLogInstFnArgs, false);
 
   Type *DFSanEntryArgs[1] = {Type::getInt8PtrTy(*Ctx)};
   DFSanEntryFnTy =
@@ -806,11 +838,52 @@ bool DataFlowSanitizer::runOnModule(Module &M) {
       Mod->getOrInsertFunction("__dfsan_log_taint", DFSanLogTaintFnTy);
   DFSanLogCmpFn =
       Mod->getOrInsertFunction("__dfsan_log_taint_cmp", DFSanLogCmpFnTy);
+  DFSanLogInstFn =
+       Mod->getOrInsertFunction("__dfsan_test_fn", DFSanLogInstFnTy);
   DFSanEntryFn = Mod->getOrInsertFunction("__dfsan_func_entry", DFSanEntryFnTy);
   DFSanExitFn = Mod->getOrInsertFunction("__dfsan_func_exit", DFSanExitFnTy);
   DFSanResetFrameFn =
       Mod->getOrInsertFunction("__dfsan_reset_frame", DFSanResetFrameFnTy);
 
+  //Create global allocas for creating new insts.
+  arg_val_cache_0 = new GlobalVariable(
+          /*Module=*/     M,
+          /*Type=*/       IntegerType::getInt32Ty(M.getContext()),
+          /*isConstant=*/ false,
+          /*Linkage=*/    GlobalValue::ExternalLinkage,
+          /*Initializer=*/0, // has initializer, specified below
+          /*Name=*/"arg_val_cache_0");
+  arg_val_cache_0->setAlignment(4);
+
+  arg_val_cache_1 = new GlobalVariable(
+          /*Module=*/     M,
+          /*Type=*/       IntegerType::getInt32Ty(M.getContext()),
+          /*isConstant=*/ false,
+          /*Linkage=*/    GlobalValue::ExternalLinkage,
+          /*Initializer=*/0, // has initializer, specified below
+          /*Name=*/"arg_val_cache_1");
+  arg_val_cache_1->setAlignment(4);
+
+  label_cache_0 = new GlobalVariable(
+          /*Module=*/     M,
+          /*Type=*/       IntegerType::getInt32Ty(M.getContext()),
+          /*isConstant=*/ false,
+          /*Linkage=*/    GlobalValue::ExternalLinkage,
+          /*Initializer=*/0, // has initializer, specified below
+          /*Name=*/"label_cache_0");
+  label_cache_0->setAlignment(4);
+
+  label_cache_1 = new GlobalVariable(
+          /*Module=*/     M,
+          /*Type=*/       IntegerType::getInt32Ty(M.getContext()),
+          /*isConstant=*/ false,
+          /*Linkage=*/    GlobalValue::ExternalLinkage,
+          /*Initializer=*/0, // has initializer, specified below
+          /*Name=*/"label_cache_1");
+  label_cache_1->setAlignment(4);
+
+  //M.getOrInsertGlobal("arg_val_cache_0", IntegerType::getInt32Ty(M.getContext()));
+  //M.getOrInsertGlobal("arg_val_cache_1", IntegerType::getInt32Ty(M.getContext()));
   std::vector<Function *> FnsToInstrument;
   SmallPtrSet<Function *, 2> FnsWithNativeABI;
   for (Function &i : M) {
@@ -819,7 +892,7 @@ bool DataFlowSanitizer::runOnModule(Module &M) {
         &i != DFSanSetLabelFn && &i != DFSanNonzeroLabelFn &&
         &i != DFSanVarargWrapperFn && &i != DFSanLogTaintFn &&
         &i != DFSanLogCmpFn && &i != DFSanEntryFn && &i != DFSanExitFn &&
-        &i != DFSanResetFrameFn)
+        &i != DFSanResetFrameFn && &i != DFSanLogInstFn)
       FnsToInstrument.push_back(&i);
   }
 
@@ -1505,11 +1578,33 @@ void DFSanVisitor::visitBinaryOperator(BinaryOperator &BO) {
 void DFSanVisitor::visitCastInst(CastInst &CI) { visitOperandShadowInst(CI); }
 
 void DFSanVisitor::visitCmpInst(CmpInst &CI) {
-
   Value *CombinedShadow = DFSF.combineOperandShadows(&CI);
   DFSF.setShadow(&CI, CombinedShadow);
   IRBuilder<> IRB(&CI);
   CallInst *Call = IRB.CreateCall(DFSF.DFS.DFSanLogCmpFn, CombinedShadow);
+  Value * opt_1 = CI.getOperand(0);
+  Value * opt_2 = CI.getOperand(1);
+  Value * shad_1 = DFSF.getShadow(opt_1);
+  Value * shad_2 = DFSF.getShadow(opt_2);
+  std::cout << "GOT SHADOW" << std::endl;
+  IntegerType *ShadowTy = IntegerType::get(*DFSF.DFS.Ctx, DFSF.DFS.ShadowWidth);
+  //FIXME Add
+  Value *ExtZeroShadow = ConstantInt::get(ShadowTy, 1);
+  //Value * ValOne = IRB.CreateAlloca(IntegerType::getInt32Ty(*(DFSF.DFS.Ctx)));
+  auto store_shad_1 = IRB.CreateStore(shad_1, DFSF.DFS.label_cache_0);
+  auto store_shad_2 = IRB.CreateStore(shad_2, DFSF.DFS.label_cache_1);
+  auto store_inst_opt1 = IRB.CreateStore(opt_1, DFSF.DFS.arg_val_cache_0);
+  //Value * ValTwo = IRB.CreateAlloca(IntegerType::getInt32Ty(*(DFSF.DFS.Ctx)));
+  auto store_inst_opt2 = IRB.CreateStore(opt_2, DFSF.DFS.arg_val_cache_1);
+  CallInst *CallTest = IRB.CreateCall(DFSF.DFS.DFSanLogInstFn,
+		  {		  ExtZeroShadow,
+				  DFSF.DFS.arg_val_cache_0,
+				  DFSF.DFS.arg_val_cache_1,
+				  DFSF.DFS.label_cache_0,
+				  DFSF.DFS.label_cache_1,
+		  }
+  );
+
 }
 
 void DFSanVisitor::visitGetElementPtrInst(GetElementPtrInst &GEPI) {
