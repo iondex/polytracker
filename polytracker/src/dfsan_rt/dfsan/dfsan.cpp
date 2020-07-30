@@ -107,11 +107,6 @@ std::mutex init_lock;
 int __dfsan::vmaSize;
 #endif
 
-uint32_t arg_val_cache_0;
-uint32_t arg_val_cache_1;
-dfsan_label label_cache_0;
-dfsan_label label_cache_1;
-
 static uptr UnusedAddr() {
   // The unused region
   return MappingArchImpl<MAPPING_TAINT_FOREST_ADDR>() +
@@ -140,25 +135,31 @@ extern "C" SANITIZER_INTERFACE_ATTRIBUTE void __dfsan_log_taint_cmp(
   taint_manager->logCompare(some_label);
 }
 
-//TODO add combined label
+
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE void __dfsan_test_fn(
-		uint32_t op_code, uint64_t * addr_1, uint64_t * addr_2, dfsan_label labela, dfsan_label labelb) {
+		uint32_t op_code, uint32_t * val_a, uint32_t * val_b, dfsan_label *labela, dfsan_label *labelb) {
 	//Debug logging
-	std::string res = "";
-	uint32_t * test_cast = (uint32_t *)addr_1;
-	uint32_t * test_cast_two = (uint32_t *)addr_2;
-	char one_char = (char) *test_cast;
-	char two_char = (char) *test_cast_two;
-	std::cout << "char 1?: " << one_char << std::endl;
-	std::cout << "char 2?: " << two_char << std::endl;
-	std::cout << "char 1(from cache): " << (char)arg_val_cache_0 << std::endl;
-	std::cout << "char 2(from cache): " << (char)arg_val_cache_1 << std::endl;
-	dfsan_label test_label_one = dfsan_read_label(test_cast, sizeof(*test_cast));
-	dfsan_label test_label_two = dfsan_read_label(test_cast_two, sizeof(*test_cast_two));
-	std::cout << "LABEL ONE: " << test_label_one << std::endl;
-	std::cout << "LABEL TWO: " << test_label_two << std::endl;
-	std::cout << "label one(from cache): " << label_cache_0 << std::endl;
-	std::cout << "label two(from cache): " << label_cache_1 << std::endl;
+	std::string res("");
+	res += std::to_string(op_code) + " ";
+	//If both are 0, this operation is not related to tainted input so we don't care.
+	//NOTE This might be relevant with implicit control flow
+	//until we implement the strict dependency and LDX work
+	if (*labela == 0 && *labelb == 0) {
+		return;
+	}
+	if (*labela != 0) {
+		res += "LABEL(" + std::to_string(*labela) + ") ";
+	}
+	else {
+		res += "VAL(" + std::to_string(*val_a) + ") ";
+	}
+	if (*labelb != 0) {
+		res += "LABEL(" + std::to_string(*labelb) + ")";
+	}
+	else {
+		res += "VAL(" + std::to_string(*val_b) + ")";
+	}
+	std::cout << res << std::endl;
 }
 
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE void __dfsan_log_taint(
