@@ -5,6 +5,7 @@
 #include <iostream>
 #include <set>
 #include <stack>
+#include <tuple>
 
 #include "sanitizer_common/sanitizer_atomic.h"
 #include "sanitizer_common/sanitizer_common.h"
@@ -12,6 +13,10 @@
 #include "sanitizer_common/sanitizer_flag_parser.h"
 #include "sanitizer_common/sanitizer_flags.h"
 #include "sanitizer_common/sanitizer_libc.h"
+
+using polytracker::BasicBlockEntry;
+using polytracker::FunctionCall;
+using polytracker::TraceEvent;
 
 using namespace __dfsan;
 
@@ -49,6 +54,13 @@ void taintManager::logCompare(dfsan_label some_label) {
   std::vector<std::string> func_stack = thread_stack_map[this_id];
   (function_to_cmp_bytes)[func_stack[func_stack.size() - 1]].insert(curr_node);
   (function_to_bytes)[func_stack[func_stack.size() - 1]].insert(curr_node);
+  if (auto bb = trace.currentBB()) {
+    // we are recording a full trace, and we know the current basic block
+    if (curr_node->p1 == nullptr && curr_node->p2 == nullptr) {
+      // this is a canonical label
+      trace.setLastUsage(some_label, *bb);
+    }
+  }
   taint_prop_lock.unlock();
 }
 
@@ -61,6 +73,13 @@ void taintManager::logOperation(dfsan_label some_label) {
   std::thread::id this_id = std::this_thread::get_id();
   std::vector<std::string> func_stack = thread_stack_map[this_id];
   (function_to_bytes)[func_stack[func_stack.size() - 1]].insert(new_node);
+  if (auto bb = trace.currentBB()) {
+    // we are recording a full trace, and we know the current basic block
+    if (new_node->p1 == nullptr && new_node->p2 == nullptr) {
+      // this is a canonical label
+      trace.setLastUsage(some_label, *bb);
+    }
+  }
   taint_prop_lock.unlock();
 }
 
@@ -78,6 +97,9 @@ int taintManager::logFunctionEntry(char* fname) {
     (runtime_cfg)[new_str].insert(caller);
   }
   (thread_stack_map)[this_id].push_back(new_str);
+  if (recordTrace()) {
+    trace.getStack(this_id).emplace<FunctionCall>();
+  }
   taint_prop_lock.unlock();
   return thread_stack_map[this_id].size() - 1;
 }
@@ -86,8 +108,52 @@ void taintManager::logFunctionExit() {
   taint_prop_lock.lock();
   std::thread::id this_id = std::this_thread::get_id();
   (thread_stack_map)[this_id].pop_back();
+  if (recordTrace()) {
+    auto& stack = trace.getStack(this_id);
+    bool foundFunction = false;
+    for (TraceEvent* event = stack.peek();
+        event != nullptr;
+        event = event->previous) {
+      if (auto func = dynamic_cast<FunctionCall*>(event)) {
+        foundFunction = true;
+        stack.pop();
+        break;
+      }
+      stack.pop();
+    }
+    if (!foundFunction) {
+      std::cout
+          << "Error finding matching function call in the event trace stack!"
+          << std::endl;
+    }
+  }
   taint_prop_lock.unlock();
 }
+
+/**
+ * This function will be called on the entry of every basic block.
+ * It will only be called if taintManager::recordTrace() is true,
+ * which will only be set if the POLYTRACE environment variable is set.
+ */
+void taintManager::logBBEntry(char *fname, BBIndex bbIndex) {
+  taint_prop_lock.lock();
+  auto currentBB = trace.currentBB();
+  auto event = trace.currentStack()->emplace<BasicBlockEntry>(fname, bbIndex);
+  if (currentBB) {
+    trace.cfg.addChild(*currentBB, *event);
+  } else {
+    if (auto fCall = dynamic_cast<FunctionCall*>(trace.secondToLastEvent())) {
+      // currentBB is the first basic block in a function call
+      if (auto callingBB = dynamic_cast<BasicBlockEntry*>(fCall->previous)) {
+        // we know the basic block that called fCall
+        trace.cfg.addChild(*callingBB, *event);
+      }
+    }
+  }
+  taint_prop_lock.unlock();
+}
+
+void taintManager::logBBExit() {}
 
 void taintManager::resetFrame(int* index) {
   taint_prop_lock.lock();
@@ -123,7 +189,73 @@ void taintManager::addJsonRuntimeCFG() {
   }
 }
 
+json escapeChar(int c) {
+  std::stringstream s;
+  s << '"';
+  if (c >= 32 && c <= 126 && c != '"' && c != '\\') {
+    s << (char)c;
+  } else if (c != EOF) {
+    s << "\\u" << std::hex << std::setw(4) << std::setfill('0') << c;
+  }
+  s << '"';
+  return json::parse(s.str());
+}
+
+void taintManager::addJsonRuntimeTrace() {
+  if (!recordTrace()) { return; }
+  output_json["trace"]["method_map_fmt"] =
+      "method_call_id, method_name, children";
+  size_t id = 0;
+  for (auto& bb : trace.cfg.bbs()) {
+    json entry(std::make_tuple(id, bb.str(), trace.cfg.childIds(id)));
+    output_json["trace"]["method_map"][std::to_string(id)] = entry;
+    ++id;
+  }
+  output_json["trace"]["comparisons_fmt"] = "idx, char, method_call_id";
+  std::vector<std::tuple<size_t, std::string, size_t>> cmps;
+  /* FIXME: this is somewhat of a hack. The Mimid code's JSON input format
+   * requires the character from each canonical byte of the input file, not
+   * just its offset. Therefore, we open the file passed as POLYPATH and read
+   * the bytes from it here.
+   *
+   * TODO: Find a better way to do this without re-opening the file!
+   *
+   * FIXME: This assumes that there is a single key in this->canonical_mapping
+   * that corresponds to POLYPATH. If/when we support multiple taint sources,
+   * this code will have to be updated!
+   */
+  if (canonical_mapping.size() < 1) {
+    std::cout << "Unexpected number of taint sources: " <<
+        canonical_mapping.size() << std::endl;
+    exit(1);
+  } else if (canonical_mapping.size() > 1) {
+    std::cout << "Warning: More than one taint source found! The resulting "
+        << "runtime trace will likely be incorrect!" << std::endl;
+  }
+  const std::string polyPath = canonical_mapping.begin()->first;
+  auto polyPathFile = fopen(polyPath.c_str(), "rb");
+  if (polyPathFile == nullptr) {
+    std::cout << "Unable to open file \"" << polyPath << "\" for generating "
+        << "the runtime trace!" << std::endl;
+    exit(1);
+  }
+  for (const auto& taint : trace.taints()) {
+    const auto& label = taint.first;
+    const auto& lastBB = taint.second;
+    if (fseek(polyPathFile, label - 1, SEEK_SET) == 0) {
+      auto c = fgetc(polyPathFile);
+      if (c != EOF) {
+        cmps.emplace_back(label, escapeChar(c), trace.cfg.id(lastBB));
+      }
+    }
+  }
+  fclose(polyPathFile);
+  output_json["trace"]["comparisons"] = cmps;
+}
+
 void taintManager::setOutputFilename(std::string out) { outfile = out; }
+
+void taintManager::setTrace(bool doTrace) { this->doTrace = doTrace; }
 
 void taintManager::outputRawTaintForest() {
   std::string forest_fname = outfile + "_forest.bin";
@@ -182,6 +314,7 @@ void taintManager::outputRawTaintSets() {
   //       (2) Add support for parsing the changes in /polytracker/polytracker.py
   addJsonVersion();
   addJsonRuntimeCFG();
+  addJsonRuntimeTrace();
   addTaintSources();
   addCanonicalMapping();
   addTaintedBlocks();
@@ -222,6 +355,7 @@ taintManager::taintManager(decay_val init_decay, char* shad_mem,
                            char* forest_ptr)
     : taintMappingManager(shad_mem, forest_ptr), taint_node_ttl(init_decay) {
   next_label = 1;
+  doTrace = false;
 }
 
 taintManager::~taintManager() {}

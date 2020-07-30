@@ -180,9 +180,6 @@ cl::opt<bool> ClDebugNonzeroLabels(
 				"load or return with a nonzero label"),
 				cl::Hidden);
 
-
-
-
 char DataFlowSanitizer::ID;
 
 INITIALIZE_PASS(DataFlowSanitizer, "dfsan",
@@ -276,7 +273,6 @@ bool DataFlowSanitizer::doInitialization(Module &M) {
 	ShadowTy = IntegerType::get(*Ctx, ShadowWidth);
 	ShadowPtrTy = PointerType::getUnqual(ShadowTy);
 	IntptrTy = DL.getIntPtrType(*Ctx);
-	//auto CharTy = Type::getInt8Ty(*Ctx);
 	ZeroShadow = ConstantInt::getSigned(ShadowTy, 0);
 	ShadowPtrMul = ConstantInt::getSigned(IntptrTy, ShadowWidth / 8);
 	if (IsX86_64)
@@ -306,22 +302,17 @@ bool DataFlowSanitizer::doInitialization(Module &M) {
 	DFSanLogCmpFnTy =
 			FunctionType::get(Type::getVoidTy(*Ctx), DFSanLogCmpArgs, false);
 
-	//DFSanLogInstFn takes op_code, addr1, addr2, addr3, addr4
-	Type * DFSanLogInstFnArgs[5] = {
-			IntegerType::getInt32Ty(*Ctx),
-			IntegerType::getInt32PtrTy(*Ctx),
-			IntegerType::getInt32PtrTy(*Ctx),
-			IntegerType::getInt32PtrTy(*Ctx),
-			IntegerType::getInt32PtrTy(*Ctx)
-	};
-	DFSanLogInstFnTy =
-			FunctionType::get(Type::getVoidTy(*Ctx), DFSanLogInstFnArgs, false);
-
 	Type *DFSanEntryArgs[1] = {Type::getInt8PtrTy(*Ctx)};
 	DFSanEntryFnTy =
 			FunctionType::get(IntegerType::getInt64Ty(*Ctx), DFSanEntryArgs, false);
 
 	DFSanExitFnTy = FunctionType::get(Type::getVoidTy(*Ctx), {}, false);
+	Type *DFSanEntryBBArgs[3] = {Type::getInt8PtrTy(*Ctx),
+			IntegerType::getInt32Ty(*Ctx),
+			IntegerType::getInt32Ty(*Ctx)};
+	DFSanEntryBBFnTy =
+			FunctionType::get(Type::getVoidTy(*Ctx), DFSanEntryBBArgs, false);
+	DFSanExitBBFnTy = FunctionType::get(Type::getVoidTy(*Ctx), {}, false);
 	Type *DFSanResetFrameArgs[1] = {IntegerType::getInt64PtrTy(*Ctx)};
 	DFSanResetFrameFnTy =
 			FunctionType::get(Type::getVoidTy(*Ctx), DFSanResetFrameArgs, false);
@@ -526,44 +517,47 @@ void DataFlowSanitizer::insertRuntimeFunctions() {
 			Mod->getOrInsertFunction("__dfsan_test_fn", DFSanLogInstFnTy);
 	DFSanEntryFn = Mod->getOrInsertFunction("__dfsan_func_entry", DFSanEntryFnTy);
 	DFSanExitFn = Mod->getOrInsertFunction("__dfsan_func_exit", DFSanExitFnTy);
+	DFSanEntryBBFn =
+			Mod->getOrInsertFunction("__dfsan_bb_entry", DFSanEntryBBFnTy);
+	DFSanExitBBFn = Mod->getOrInsertFunction("__dfsan_bb_exit", DFSanExitBBFnTy);
 	DFSanResetFrameFn =
 			Mod->getOrInsertFunction("__dfsan_reset_frame", DFSanResetFrameFnTy);
 }
 void DataFlowSanitizer::collectFunctions(std::vector<Function*> &FnsToInstrument, Module& M) {
 	for (Function &i : M) {
-			if (!i.isIntrinsic() && &i != DFSanUnionFn && &i != DFSanCheckedUnionFn &&
-					&i != DFSanUnionLoadFn && &i != DFSanUnimplementedFn &&
-					&i != DFSanSetLabelFn && &i != DFSanNonzeroLabelFn &&
-					&i != DFSanVarargWrapperFn && &i != DFSanLogTaintFn &&
-					&i != DFSanLogCmpFn && &i != DFSanEntryFn && &i != DFSanExitFn &&
-					&i != DFSanResetFrameFn && &i != DFSanLogInstFn)
-				FnsToInstrument.push_back(&i);
-		}
+		if (!i.isIntrinsic() && &i != DFSanUnionFn && &i != DFSanCheckedUnionFn &&
+				&i != DFSanUnionLoadFn && &i != DFSanUnimplementedFn &&
+				&i != DFSanSetLabelFn && &i != DFSanNonzeroLabelFn &&
+				&i != DFSanVarargWrapperFn && &i != DFSanLogTaintFn &&
+				&i != DFSanLogCmpFn && &i != DFSanEntryFn && &i != DFSanExitFn &&
+				&i != DFSanResetFrameFn && &i != DFSanLogInstFn)
+			FnsToInstrument.push_back(&i);
+	}
 
-		// Give function aliases prefixes when necessary, and build wrappers where the
-		// instrumentedness is inconsistent.
-		for (Module::alias_iterator i = M.alias_begin(), e = M.alias_end(); i != e;) {
-			GlobalAlias *GA = &*i;
-			++i;
-			// Don't stop on weak.  We assume people aren't playing games with the
-			// instrumentedness of overridden weak aliases.
-			if (auto F = dyn_cast<Function>(GA->getBaseObject())) {
-				bool GAInst = isInstrumented(GA), FInst = isInstrumented(F);
-				if (GAInst && FInst) {
-					addGlobalNamePrefix(GA);
-				} else if (GAInst != FInst) {
-					// Non-instrumented alias of an instrumented function, or vice versa.
-					// Replace the alias with a native-ABI wrapper of the aliasee.  The pass
-					// below will take care of instrumenting it.
-					Function *NewF =
-							buildWrapperFunction(F, "", GA->getLinkage(), F->getFunctionType());
-					GA->replaceAllUsesWith(ConstantExpr::getBitCast(NewF, GA->getType()));
-					NewF->takeName(GA);
-					GA->eraseFromParent();
-					FnsToInstrument.push_back(NewF);
-				}
+	// Give function aliases prefixes when necessary, and build wrappers where the
+	// instrumentedness is inconsistent.
+	for (Module::alias_iterator i = M.alias_begin(), e = M.alias_end(); i != e;) {
+		GlobalAlias *GA = &*i;
+		++i;
+		// Don't stop on weak.  We assume people aren't playing games with the
+		// instrumentedness of overridden weak aliases.
+		if (auto F = dyn_cast<Function>(GA->getBaseObject())) {
+			bool GAInst = isInstrumented(GA), FInst = isInstrumented(F);
+			if (GAInst && FInst) {
+				addGlobalNamePrefix(GA);
+			} else if (GAInst != FInst) {
+				// Non-instrumented alias of an instrumented function, or vice versa.
+				// Replace the alias with a native-ABI wrapper of the aliasee.  The pass
+				// below will take care of instrumenting it.
+				Function *NewF =
+						buildWrapperFunction(F, "", GA->getLinkage(), F->getFunctionType());
+				GA->replaceAllUsesWith(ConstantExpr::getBitCast(NewF, GA->getType()));
+				NewF->takeName(GA);
+				GA->eraseFromParent();
+				FnsToInstrument.push_back(NewF);
 			}
 		}
+	}
 }
 
 void DataFlowSanitizer::collectBasicBlocks(std::vector<BasicBlock*>& BasicBlocks, Module& M) {
@@ -578,9 +572,43 @@ bool DataFlowSanitizer::runOnModule(Module &M) {
 
 	std::vector<Function *> FnsToInstrument;
 	SmallPtrSet<Function *, 2> FnsWithNativeABI;
+	for (Function &i : M) {
+		if (!i.isIntrinsic() && &i != DFSanUnionFn && &i != DFSanCheckedUnionFn &&
+				&i != DFSanUnionLoadFn && &i != DFSanUnimplementedFn &&
+				&i != DFSanSetLabelFn && &i != DFSanNonzeroLabelFn &&
+				&i != DFSanVarargWrapperFn && &i != DFSanLogTaintFn &&
+				&i != DFSanLogCmpFn && &i != DFSanEntryFn && &i != DFSanExitFn &&
+				&i != DFSanEntryBBFn && &i != DFSanExitBBFn && &i != DFSanResetFrameFn)
+			FnsToInstrument.push_back(&i);
+	}
+
+	// Give function aliases prefixes when necessary, and build wrappers where the
+	// instrumentedness is inconsistent.
+	for (Module::alias_iterator i = M.alias_begin(), e = M.alias_end(); i != e;) {
+		GlobalAlias *GA = &*i;
+		++i;
+		// Don't stop on weak.  We assume people aren't playing games with the
+		// instrumentedness of overridden weak aliases.
+		if (auto F = dyn_cast<Function>(GA->getBaseObject())) {
+			bool GAInst = isInstrumented(GA), FInst = isInstrumented(F);
+			if (GAInst && FInst) {
+				addGlobalNamePrefix(GA);
+			} else if (GAInst != FInst) {
+				// Non-instrumented alias of an instrumented function, or vice versa.
+				// Replace the alias with a native-ABI wrapper of the aliasee.  The pass
+				// below will take care of instrumenting it.
+				Function *NewF =
+						buildWrapperFunction(F, "", GA->getLinkage(), F->getFunctionType());
+				GA->replaceAllUsesWith(ConstantExpr::getBitCast(NewF, GA->getType()));
+				NewF->takeName(GA);
+				GA->eraseFromParent();
+				FnsToInstrument.push_back(NewF);
+			}
+		}
+	}
 
 	ReadOnlyNoneAttrs.addAttribute(Attribute::ReadOnly)
-    		  .addAttribute(Attribute::ReadNone);
+    				  .addAttribute(Attribute::ReadNone);
 
 	// First, change the ABI of every function in the module.  ABI-listed
 	// functions keep their original ABI and get a wrapper function.
@@ -662,6 +690,7 @@ bool DataFlowSanitizer::runOnModule(Module &M) {
 				std::cout << "Is custom func: " << is_custom << std::endl;
 			}
 #endif
+
 			Function *NewF = buildWrapperFunction(
 					&F, std::string("dfsw$") + std::string(F.getName()), wrapperLinkage,
 					NewFT);
@@ -699,15 +728,20 @@ bool DataFlowSanitizer::runOnModule(Module &M) {
 		}
 	}
 
+	uint32_t functionIndex = 0;
 	for (Function *i : FnsToInstrument) {
 		if (!i || i->isDeclaration())
 			continue;
+
+		Value *FuncIndex =
+				ConstantInt::get(IntegerType::getInt32Ty(*Ctx), functionIndex++, false);
 
 		removeUnreachableBlocks(*i);
 
 		std::string curr_fname = i->getName();
 		if (!(getWrapperKind(i) == WK_Custom || isInstrumented(i))) {
 			if (curr_fname != "main") {
+
 #ifdef DEBUG_INFO
 				std::cout << "SKIPPING: " << curr_fname << std::endl;
 #endif
@@ -758,8 +792,24 @@ bool DataFlowSanitizer::runOnModule(Module &M) {
 		// Add instrumentation for handling setjmp/longjmp here
 		// This adds a function that resets the shadow call stack
 		// When a longjmp is called.
+		uint32_t bbIndex = 0;
 		for (BasicBlock *curr_bb : BBList) {
 			Instruction *Inst = &curr_bb->front();
+
+			// Add a callback for BB entry
+			{
+				Value *BBIndex =
+						ConstantInt::get(IntegerType::getInt32Ty(*Ctx), bbIndex++, false);
+				Instruction *InsertBefore = Inst;
+				while (isa<PHINode>(InsertBefore) ||
+						isa<LandingPadInst>(InsertBefore)) {
+					// This is a PHI or landing pad instruction,
+					// so we need to add the callback afterward
+					InsertBefore = InsertBefore->getNextNode();
+				}
+				IRBuilder<> IRB(InsertBefore);
+				IRB.CreateCall(DFSanEntryBBFn, {FuncName, FuncIndex, BBIndex});
+			}
 			while (true) {
 				Instruction *Next = Inst->getNextNode();
 				CallInst *potential_call = dyn_cast<CallInst>(Inst);
@@ -779,6 +829,7 @@ bool DataFlowSanitizer::runOnModule(Module &M) {
 					break;
 				Inst = Next;
 			}
+			IRBuilder<>(Inst).CreateCall(DFSanExitBBFn);
 		}
 
 		// We will not necessarily be able to compute the shadow for every phi node
@@ -821,6 +872,7 @@ bool DataFlowSanitizer::runOnModule(Module &M) {
 
 	return false;
 }
+
 
 Value *DataFlowSanitizer::getShadowAddress(Value *Addr, Instruction *Pos) {
 	assert(Addr != RetvalTLS && "Reinstrumenting?");
