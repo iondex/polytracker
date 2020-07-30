@@ -71,6 +71,7 @@ struct BasicBlockTraceHasher {
   }
 };
 
+
 struct BasicBlockTraceComparator {
   std::size_t operator()(std::reference_wrapper<const BasicBlockTrace> lhs, std::reference_wrapper<const BasicBlockTrace> rhs) const {
     return lhs.get() < rhs.get();
@@ -96,6 +97,27 @@ public:
   }
 
   std::string str() const { return BasicBlockTrace(*this).str(); }
+};
+
+class TaintedInstruction : public TraceEvent {
+public:
+	BBIndex index;
+	uint32_t opcode;
+};
+
+class TaintedUnaryInstruction : public TaintedInstruction {
+public:
+	dfsan_label label;
+	TaintedUnaryInstruction(BBIndex index, uint32_t opcode, dfsan_label label) : index(index), opcode(opcode), label(label) {}
+};
+
+//The tainted binary instructions come in the form
+// (LABEL, LABEL), (CONST, LABEL), (LABEL, CONST)
+// info = 0 		info = 1	     info = 2
+class TaintedBinaryInstruction : public TaintedInstruction {
+	uint32_t lhs;
+	uint32_t rhs;
+	uint8_t info;
 };
 
 class TraceEventStack {
@@ -238,6 +260,34 @@ public:
   decltype(lastUsages) taints() const {
     return lastUsages;
   }
+};
+
+class InstructionTrace {
+	std::unordered_map<std::thread::id, TraceEventStack> eventStacks;
+	//Don't need to make the CFG, we just need this slice for now
+public:
+	TraceEventStack &getStack(std::thread::id thread) {
+	    return eventStacks[std::this_thread::get_id()];
+	  }
+	  TraceEventStack *currentStack() {
+	    return &eventStacks[std::this_thread::get_id()];
+	  }
+	  const TraceEventStack *currentStack() const {
+	    auto stackIter = eventStacks.find(std::this_thread::get_id());
+	    if (stackIter != eventStacks.end()) {
+	      return &stackIter->second;
+	    } else {
+	      return nullptr;
+	    }
+	  }
+	  TraceEvent *lastEvent() const {
+	    if (auto stack = currentStack()) {
+	      return stack->peek();
+	    } else {
+	      return nullptr;
+	    }
+	  }
+
 };
 
 } /* namespace polytracker */
