@@ -93,6 +93,8 @@ public:
   void logFunctionExit();
   void logBBEntry(char *fname, BBIndex bbIndex);
   void logBBExit();
+  void logTaintedBinaryInst(BBIndex bbIndex, uint32_t opcode,
+		  uint32_t lhs, uint32_t rhs, dfsan_label lhs_label, dfsan_label rhs_label);
   void resetFrame(int *index);
   void output();
   dfsan_label getLastLabel();
@@ -101,8 +103,10 @@ public:
   dfsan_label createUnionLabel(dfsan_label l1, dfsan_label l2);
   dfsan_label createReturnLabel(int file_byte_offset, std::string name);
   void setOutputFilename(std::string outfile);
-  void setTrace(bool doTrace);
-  bool recordTrace() const { return doTrace; }
+  void setTrace(bool do_trace);
+  bool recordTrace() const { return do_trace; }
+  void setInstructionTrace(bool do_trace);
+  bool recordInstructionTrace() const {return do_inst_trace;}
 
 private:
   void checkMaxLabel(dfsan_label label);
@@ -132,8 +136,10 @@ private:
   thread_id_map thread_stack_map;
   string_node_map function_to_bytes;
   string_node_map function_to_cmp_bytes;
-  bool doTrace;
+  bool do_trace;
   polytracker::Trace trace;
+  bool do_inst_trace;
+  polytracker::InstructionTrace inst_trace;
   std::unordered_map<std::string, std::unordered_set<std::string>> runtime_cfg;
   std::string outfile;
   json output_json;

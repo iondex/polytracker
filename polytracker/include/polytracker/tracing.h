@@ -99,14 +99,11 @@ public:
   std::string str() const { return BasicBlockTrace(*this).str(); }
 };
 
-class TaintedInstruction : public TraceEvent {
+
+class TaintedUnaryInstruction : public TraceEvent {
 public:
 	BBIndex index;
 	uint32_t opcode;
-};
-
-class TaintedUnaryInstruction : public TaintedInstruction {
-public:
 	dfsan_label label;
 	TaintedUnaryInstruction(BBIndex index, uint32_t opcode, dfsan_label label) : index(index), opcode(opcode), label(label) {}
 };
@@ -114,10 +111,15 @@ public:
 //The tainted binary instructions come in the form
 // (LABEL, LABEL), (CONST, LABEL), (LABEL, CONST)
 // info = 0 		info = 1	     info = 2
-class TaintedBinaryInstruction : public TaintedInstruction {
+class TaintedBinaryInstruction : public TraceEvent {
+public:
+	BBIndex index;
+	uint32_t opcode;
 	uint32_t lhs;
 	uint32_t rhs;
 	uint8_t info;
+	TaintedBinaryInstruction(BBIndex index, uint32_t opcode, uint32_t lhs, uint32_t rhs, uint8_t info) :
+		index(index), opcode(opcode), lhs(lhs), rhs(rhs), info(info) {}
 };
 
 class TraceEventStack {
@@ -287,7 +289,13 @@ public:
 	      return nullptr;
 	    }
 	  }
-
+	  /**
+	     * Returns the current tainted instruction for curr thread
+	     */
+	  //FIXME add unarys
+	    TaintedBinaryInstruction *currentInst() const {
+	      return dynamic_cast<TaintedBinaryInstruction *>(lastEvent());
+	    }
 };
 
 } /* namespace polytracker */

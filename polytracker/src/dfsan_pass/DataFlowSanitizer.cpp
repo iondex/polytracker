@@ -808,6 +808,7 @@ bool DataFlowSanitizer::runOnModule(Module &M) {
 					InsertBefore = InsertBefore->getNextNode();
 				}
 				IRBuilder<> IRB(InsertBefore);
+				basic_block_id_map[curr_bb] = BBIndex;
 				IRB.CreateCall(DFSanEntryBBFn, {FuncName, FuncIndex, BBIndex});
 			}
 			while (true) {

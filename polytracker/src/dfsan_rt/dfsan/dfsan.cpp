@@ -74,9 +74,6 @@ static decay_val taint_node_ttl = DEFAULT_TTL;
 // This is the output file name
 static const char *polytracker_output_filename;
 
-// Whether or not to perform a full program trace
-static bool polytracker_trace = false;
-
 // Manages taint info/propagation
 taintManager *taint_manager = nullptr;
 static bool is_init = false;
@@ -132,7 +129,7 @@ extern "C" SANITIZER_INTERFACE_ATTRIBUTE int __dfsan_func_entry(char *fname) {
 
   return taint_manager->logFunctionEntry(fname);
 }
-
+//FIXME See if we can remove late late init
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE void __dfsan_bb_entry(char *fname,
     uint32_t functionIndex, uint32_t bbIndex) {
   init_lock.lock();
@@ -141,44 +138,33 @@ extern "C" SANITIZER_INTERFACE_ATTRIBUTE void __dfsan_bb_entry(char *fname,
     is_init = true;
   }
   init_lock.unlock();
-
+  //FIXME these checks can be removed if we have build time settings that match the runtime settings
   if (taint_manager->recordTrace()) {
     taint_manager->logBBEntry(fname, BBIndex(functionIndex, bbIndex));
   }
 }
 
+//TODO remove
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE void __dfsan_log_taint_cmp(
     dfsan_label some_label) {
   taint_manager->logCompare(some_label);
 }
 
-
+//TODO rename
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE void __dfsan_test_fn(
-		uint32_t op_code, uint32_t * val_a, uint32_t * val_b, dfsan_label *labela, dfsan_label *labelb) {
-	//Debug logging
-	std::string res("");
-	res += std::to_string(op_code) + " ";
-	//If both are 0, this operation is not related to tainted input so we don't care.
+		BBIndex bbIndex, uint32_t op_code, uint32_t * val_a, uint32_t * val_b, dfsan_label *labela, dfsan_label *labelb) {
 	//NOTE This might be relevant with implicit control flow
 	//until we implement the strict dependency and LDX work
-	if (*labela == 0 && *labelb == 0) {
+	//If it's not a tainted instruction, or we are not tracing, ignore.
+	if ((*labela == 0 && *labelb == 0) || taint_manager->recordInstructionTrace() == false) {
 		return;
 	}
-	if (*labela != 0) {
-		res += "LABEL(" + std::to_string(*labela) + ") ";
-	}
 	else {
-		res += "VAL(" + std::to_string(*val_a) + ") ";
+		taint_manager->logTaintedBinaryInst(bbIndex, op_code, *val_a, *val_b, *labela, *labelb);
 	}
-	if (*labelb != 0) {
-		res += "LABEL(" + std::to_string(*labelb) + ")";
-	}
-	else {
-		res += "VAL(" + std::to_string(*val_b) + ")";
-	}
-	std::cout << res << std::endl;
 }
 
+//TODO remove
 extern "C" SANITIZER_INTERFACE_ATTRIBUTE void __dfsan_log_taint(
     dfsan_label some_label) {
   taint_manager->logOperation(some_label);
@@ -420,21 +406,28 @@ void dfsan_parse_env() {
   }
 
   const char *poly_trace = dfsan_getenv("POLYTRACE");
-  if (poly_trace == NULL) {
-    polytracker_trace = false;
-  } else {
+  if (poly_trace != NULL) {
 	auto trace_str = std::string(poly_trace);
 	std::transform(trace_str.begin(), trace_str.end(), trace_str.begin(),
 	    [](unsigned char c){ return std::tolower(c); });
 	if (trace_str == "off" || trace_str == "no" || trace_str == "0") {
-		polytracker_trace = false;
-	} else {
-		polytracker_trace = true;
-	}
-  }
+		taint_manager->setTrace(false);
+		taint_manager->setInstructionTrace(false);
 
+	}
+	else if (trace_str == "1") {
+		 taint_manager->setTrace(true);
+		 taint_manager->setInstructionTrace(false);
+	}
+	else if (trace_str == "2"){
+		 taint_manager->setTrace(true);
+		 taint_manager->setInstructionTrace(true);
+	}
+  } else {
+	  taint_manager->setTrace(false);
+	  taint_manager->setInstructionTrace(false);
+  }
   taint_manager->setOutputFilename(std::string(polytracker_output_filename));
-  taint_manager->setTrace(polytracker_trace);
 
   const char *env_ttl = dfsan_getenv("POLYTTL");
   decay_val taint_node_ttl = DEFAULT_TTL;

@@ -308,6 +308,8 @@ public:
   void insertRuntimeFunctions();
   void collectFunctions(std::vector<Function*>&, Module &M);
   void collectBasicBlocks(std::vector<BasicBlock*>&, Module &M);
+
+  std::unordered_map<BasicBlock*, Value*> basic_block_id_map;
 };
 
 

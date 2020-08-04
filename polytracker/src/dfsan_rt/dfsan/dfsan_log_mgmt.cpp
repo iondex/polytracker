@@ -17,6 +17,7 @@
 using polytracker::BasicBlockEntry;
 using polytracker::FunctionCall;
 using polytracker::TraceEvent;
+using polytracker::TaintedBinaryInstruction;
 
 using namespace __dfsan;
 
@@ -43,7 +44,7 @@ dfsan_label taintMappingManager::getTaintLabel(taint_node_t* node) {
   taint_mapping_lock.unlock();
   return ret_label;
 }
-
+//FIXME Remove these, and move over evans last usage info to something else.
 void taintManager::logCompare(dfsan_label some_label) {
   if (some_label == 0) {
     return;
@@ -155,6 +156,33 @@ void taintManager::logBBEntry(char *fname, BBIndex bbIndex) {
 
 void taintManager::logBBExit() {}
 
+/**
+ * This function is called when there is a tainted instruction to keep track of
+ * and taintmanager::recordInstructionTrace() is true, set if POLYTRACE=2
+ */
+void taintManager::logTaintedBinaryInst(BBIndex bbIndex, uint32_t opcode,
+		uint32_t lhs, uint32_t rhs, dfsan_label lhs_label, dfsan_label rhs_label) {
+	taint_prop_lock.lock();
+	auto currentInst = inst_trace.currentStack();
+	//Determine which vals to emplace
+	if (lhs_label != 0) {
+		//(LABEL, LABEL)
+		if (rhs_label != 0) {
+			inst_trace.currentStack()->emplace<TaintedBinaryInstruction>(bbIndex, opcode, lhs_label, rhs_label, (uint8_t)0);
+		}
+		//(LABEL, CONST)
+		else {
+			inst_trace.currentStack()->emplace<TaintedBinaryInstruction>(bbIndex, opcode, lhs_label, rhs, (uint8_t)1);
+		}
+	}
+	//(CONST, LABEL)
+	else {
+		inst_trace.currentStack()->emplace<TaintedBinaryInstruction>(bbIndex, opcode, lhs, rhs_label, (uint8_t)2);
+	}
+
+	taint_prop_lock.unlock();
+}
+
 void taintManager::resetFrame(int* index) {
   taint_prop_lock.lock();
   if (index == nullptr) {
@@ -255,7 +283,7 @@ void taintManager::addJsonRuntimeTrace() {
 
 void taintManager::setOutputFilename(std::string out) { outfile = out; }
 
-void taintManager::setTrace(bool doTrace) { this->doTrace = doTrace; }
+void taintManager::setTrace(bool do_trace) { this->do_trace = do_trace; }
 
 void taintManager::outputRawTaintForest() {
   std::string forest_fname = outfile + "_forest.bin";
@@ -355,7 +383,8 @@ taintManager::taintManager(decay_val init_decay, char* shad_mem,
                            char* forest_ptr)
     : taintMappingManager(shad_mem, forest_ptr), taint_node_ttl(init_decay) {
   next_label = 1;
-  doTrace = false;
+  do_trace = false;
+  do_inst_trace = false;
 }
 
 taintManager::~taintManager() {}
